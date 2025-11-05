@@ -485,17 +485,15 @@ def train_model(model_type, train_loader, val_loader, num_epochs, device, save_d
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='单独训练各个模型')
-    parser.add_argument('--model_type', type=str, required=True,
-                       choices=['resnet', 'densenet', 'co_occurrence', 'gram_net'],
-                       help='要训练的模型类型')
+    parser.add_argument('--model_type', type=str, default='gram_net', choices=['resnet', 'densenet', 'co_occurrence', 'gram_net'], help='要训练的模型类型')
     parser.add_argument('--data_dir', type=str, default='E:/data', help='数据根目录')
+    # parser.add_argument('--data_dir', type=str, default='E:/code/data_test', help='数据根目录')
     parser.add_argument('--batch_size', type=int, default=32, help='批次大小')
-    parser.add_argument('--num_epochs', type=int, default=50, help='训练轮数')
+    parser.add_argument('--num_epochs', type=int, default=30, help='训练轮数')
     parser.add_argument('--learning_rate', type=float, default=1e-3, help='学习率')
     parser.add_argument('--save_dir', type=str, default='./checkpoints', help='模型保存目录')
     parser.add_argument('--num_workers', type=int, default=4, help='数据加载工作进程数')
-    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu',
-                       help='设备')
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', help='设备')
 
     args = parser.parse_args()
 
@@ -503,7 +501,7 @@ def main():
 
     # 数据预处理
     train_transform = transforms.Compose([
-        transforms.Resize((256, 256)),
+        transforms.Resize((100, 100)),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomRotation(10),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
@@ -512,7 +510,7 @@ def main():
     ])
 
     val_transform = transforms.Compose([
-        transforms.Resize((256, 256)),
+        transforms.Resize((100, 100)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])

@@ -85,6 +85,49 @@ class GramBlock(nn.Module):
         return combined_features
 
 
+class ResidualBlock(nn.Module):
+    """
+    残差块，包含两个3×3卷积层和跳跃连接
+    """
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+
+        # 第一个卷积层
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+        # 第二个卷积层
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # 跳跃连接
+        self.downsample = None
+        if stride != 1 or in_channels != out_channels:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+
+
 class GramNetPaper(nn.Module):
     """
     按照论文描述重新实现的Gram-Net模型
@@ -119,68 +162,28 @@ class GramNetPaper(nn.Module):
         # 最大池化层
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)  # 128x128 -> 64x64
 
-        # 第一个阶段: 4个3×3卷积 64通道
+        # 第一个阶段: 2个残差块 64通道
         self.stage1 = nn.Sequential(
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
+            ResidualBlock(64, 64),  # 第一个残差块
+            ResidualBlock(64, 64),  # 第二个残差块
         )
 
-        # 第二个阶段: 4个3×3卷积 128通道 / 步长2
+        # 第二个阶段: 2个残差块 128通道 / 步长2
         self.stage2 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # 64x64 -> 32x32
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
+            ResidualBlock(64, 128, stride=2),  # 64x64 -> 32x32
+            ResidualBlock(128, 128),
         )
 
-        # 第三个阶段: 4个3×3卷积 256通道 / 步长2
+        # 第三个阶段: 2个残差块 256通道 / 步长2
         self.stage3 = nn.Sequential(
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),  # 32x32 -> 16x16
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
+            ResidualBlock(128, 256, stride=2),  # 32x32 -> 16x16
+            ResidualBlock(256, 256),
         )
 
-        # 第四个阶段: 4个3×3卷积 512通道 / 步长2
+        # 第四个阶段: 2个残差块 512通道 / 步长2
         self.stage4 = nn.Sequential(
-            nn.Conv2d(256, 512, kernel_size=3, stride=2, padding=1),  # 16x16 -> 8x8
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(512, 512, kernel_size=3, padding=1),
-            nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
+            ResidualBlock(256, 512, stride=2),  # 16x16 -> 8x8
+            ResidualBlock(512, 512),
         )
 
         # 全局平均池化
@@ -229,28 +232,28 @@ class GramNetPaper(nn.Module):
         gram2 = self.gram_blocks[2](x)
         gram_features.append(gram2)
 
-        # 第一个阶段: 4个3×3卷积 64通道
+        # 第一个阶段: 2个残差块 64通道
         x = self.stage1(x)
 
-        # Gram块3: 在第一个4×3×3 conv后
+        # Gram块3: 在第一个残差块后
         gram3 = self.gram_blocks[3](x)
         gram_features.append(gram3)
 
-        # 第二个阶段: 4个3×3卷积 128通道 / 步长2
+        # 第二个阶段: 2个残差块 128通道 / 步长2
         x = self.stage2(x)
 
-        # Gram块4: 在第二个4×3×3 conv后
+        # Gram块4: 在第二个残差块后
         gram4 = self.gram_blocks[4](x)
         gram_features.append(gram4)
 
-        # 第三个阶段: 4个3×3卷积 256通道 / 步长2
+        # 第三个阶段: 2个残差块 256通道 / 步长2
         x = self.stage3(x)
 
-        # Gram块5: 在第三个4×3×3 conv后
+        # Gram块5: 在第三个残差块后
         gram5 = self.gram_blocks[5](x)
         gram_features.append(gram5)
 
-        # 第四个阶段: 4个3×3卷积 512通道 / 步长2
+        # 第四个阶段: 2个残差块 512通道 / 步长2
         x = self.stage4(x)
 
         # 全局平均池化
