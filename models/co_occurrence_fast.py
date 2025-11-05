@@ -9,7 +9,7 @@ class CoOccurrenceMatrixFast(nn.Module):
     使用256x256共现矩阵和论文中的CNN架构
     """
 
-    def __init__(self, num_classes=2, num_bins=256, distance=1):
+    def __init__(self, num_classes=2, num_bins=100, distance=1):
         super(CoOccurrenceMatrixFast, self).__init__()
         self.num_classes = num_classes
         self.num_bins = num_bins  # 论文使用256

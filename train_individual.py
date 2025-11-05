@@ -14,6 +14,7 @@ import datetime
 import argparse
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
@@ -21,10 +22,12 @@ import torchvision.datasets as datasets
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.metrics import precision_recall_fscore_support, confusion_matrix
 import numpy as np
+from tqdm import tqdm
 
 # 导入模型
 from models.co_occurrence_fast import create_co_occurrence_fast_model as create_co_occurrence_model
 from models.gram_net_paper import create_gram_net_paper_model as create_gram_net_model
+import torchvision.models as models
 
 
 class DetailedExperimentLogger:
@@ -210,13 +213,13 @@ def compute_detailed_metrics(outputs, labels, is_binary=False):
 def create_model(model_type, num_classes=2, pretrained=True):
     """创建指定类型的模型"""
     if model_type == 'resnet':
-        model = torchvision.models.resnet50(pretrained=pretrained)
+        model = models.resnet50(pretrained=pretrained)
         num_features = model.fc.in_features
         model.fc = nn.Linear(num_features, num_classes)
         return model
 
     elif model_type == 'densenet':
-        model = torchvision.models.densenet201(pretrained=pretrained)
+        model = models.densenet201(pretrained=pretrained)
         num_features = model.classifier.in_features
         model.classifier = nn.Linear(num_features, num_classes)
         return model
@@ -227,6 +230,16 @@ def create_model(model_type, num_classes=2, pretrained=True):
     elif model_type == 'gram_net':
         return create_gram_net_model(num_classes=num_classes, input_size=256)
 
+    elif model_type == 'final':
+        # Final模型返回四个模型的集合
+        return {
+            'resnet': create_model('resnet', num_classes, pretrained),
+            'densenet': create_model('densenet', num_classes, pretrained),
+            'co_occurrence': create_model('co_occurrence', num_classes, pretrained),
+            'gram_net': create_model('gram_net', num_classes, pretrained),
+            'weights': torch.tensor([0.2, 0.6, 0.1, 0.1])  # 加权权重：resnet:0.2, densenet:0.6, co_occurrence:0.1, gram_net:0.1
+        }
+
     else:
         raise ValueError(f"不支持的模型类型: {model_type}")
 
@@ -235,12 +248,105 @@ def get_criterion_and_output_type(model_type):
     """根据模型类型返回对应的损失函数和输出类型"""
     if model_type == 'co_occurrence':
         return nn.BCELoss(), 'binary'
+    elif model_type == 'final':
+        # Final模型使用BCELoss，因为输出是概率
+        return nn.BCELoss(), 'binary'
     else:
         return nn.CrossEntropyLoss(), 'multi_class'
 
 
-def train_epoch(model, train_loader, criterion, optimizer, device, is_binary=False):
+def convert_to_probability(outputs, model_type, is_binary=False):
+    """将模型输出转换为真实图像的概率"""
+    if model_type == 'final':
+        # Final模型已经输出概率
+        return outputs
+
+    if is_binary:
+        # 二元分类模型直接输出概率
+        return outputs
+    else:
+        # 多分类模型：使用softmax获取真实图像的概率
+        # 假设类别0是AI图像，类别1是真实图像
+        probs = F.softmax(outputs, dim=1)
+        return probs[:, 1]  # 返回真实图像的概率
+
+
+def log_probability_info(prob_info, epoch, batch_idx, sample_idx=0, log_file="probability_log.txt"):
+    """将概率信息记录到文件中"""
+    import datetime
+
+    with open(log_file, "a", encoding="utf-8") as f:
+        f.write(f"\n=== Epoch {epoch}, Batch {batch_idx}, 样本 {sample_idx} ===\n")
+        f.write(f"时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+        # 记录各个模型的概率
+        f.write("各模型输出概率:\n")
+        for model_name, prob in prob_info['individual_probs'].items():
+            prob_value = prob[sample_idx].item() if prob.dim() > 0 else prob.item()
+            f.write(f"  {model_name}: {prob_value:.4f}\n")
+
+        # 记录权重
+        f.write(f"\n权重: {prob_info['weights'].cpu().numpy()}\n")
+
+        # 记录加权后的概率
+        f.write("\n加权后概率:\n")
+        weighted_probs = prob_info['weighted_probs'][sample_idx].cpu().numpy()
+        for model_name, weighted_prob in zip(prob_info['individual_probs'].keys(), weighted_probs):
+            f.write(f"  {model_name}: {weighted_prob:.4f}\n")
+
+        # 记录最终概率
+        final_prob = prob_info['final_prob'][sample_idx].item() if prob_info['final_prob'].dim() > 0 else prob_info['final_prob'].item()
+        f.write(f"\n最终加权概率: {final_prob:.4f}\n")
+        f.write(f"预测结果: {'真实图像' if final_prob > 0.5 else '生成图像'}\n")
+        f.write("=" * 40 + "\n")
+
+
+def forward_final_model(model_dict, x, device, record_probs=False):
+    """Final模型的前向传播"""
+    weights = model_dict['weights'].to(device)
+
+    # 获取四个模型的输出概率
+    probs = []
+    model_names = []
+    individual_probs = {}
+
+    for model_name, model in model_dict.items():
+        if model_name != 'weights':
+            model = model.to(device)
+            model.eval()
+            with torch.no_grad():
+                output = model(x)
+                # 转换为概率
+                if model_name == 'co_occurrence':
+                    prob = output.squeeze()  # 二元分类直接输出概率
+                else:
+                    prob = F.softmax(output, dim=1)[:, 1]  # 多分类取真实图像概率
+                probs.append(prob)
+                model_names.append(model_name)
+                individual_probs[model_name] = prob
+
+    # 加权平均
+    weighted_probs = torch.stack(probs, dim=1) * weights
+    final_prob = weighted_probs.sum(dim=1)
+
+    # 记录概率信息（如果启用）
+    if record_probs:
+        prob_info = {
+            'individual_probs': individual_probs,
+            'weights': weights,
+            'weighted_probs': weighted_probs,
+            'final_prob': final_prob
+        }
+        return final_prob.unsqueeze(1), prob_info  # 保持形状一致性
+    else:
+        return final_prob.unsqueeze(1)  # 保持形状一致性
+
+
+def train_epoch(model, train_loader, criterion, optimizer, device, is_binary=False, model_type=None):
     """训练一个epoch"""
+    if model_type == 'final':
+        return train_final_epoch(model, train_loader, criterion, optimizer, device)
+
     model.train()
     running_loss = 0.0
     correct = 0
@@ -250,7 +356,10 @@ def train_epoch(model, train_loader, criterion, optimizer, device, is_binary=Fal
 
     start_time = time.time()
 
-    for inputs, labels in train_loader:
+    # 创建进度条
+    pbar = tqdm(train_loader, desc=f"训练", leave=False)
+
+    for batch_idx, (inputs, labels) in enumerate(pbar):
         inputs, labels = inputs.to(device), labels.to(device)
 
         optimizer.zero_grad()
@@ -279,10 +388,19 @@ def train_epoch(model, train_loader, criterion, optimizer, device, is_binary=Fal
         correct += (preds == labels).sum().item()
         total += labels.size(0)
 
+        # 更新进度条显示
+        current_loss = running_loss / total
+        current_acc = correct / total
+        pbar.set_postfix({
+            'loss': f'{current_loss:.4f}',
+            'acc': f'{current_acc:.4f}'
+        })
+
         # 收集输出和标签用于详细指标计算
         all_outputs.append(outputs.detach())
         all_labels.append(labels.detach())
 
+    pbar.close()
     epoch_time = time.time() - start_time
 
     # 计算详细指标
@@ -296,8 +414,80 @@ def train_epoch(model, train_loader, criterion, optimizer, device, is_binary=Fal
     return epoch_loss, epoch_acc, detailed_metrics, epoch_time
 
 
-def validate_epoch(model, val_loader, criterion, device, is_binary=False):
+def train_final_epoch(model_dict, train_loader, criterion, optimizer, device):
+    """训练Final模型的一个epoch"""
+    # 分别训练四个模型
+    models_metrics = {}
+    total_time = 0
+
+    # 创建主进度条显示四个模型的训练进度
+    model_names = [name for name in model_dict.keys() if name != 'weights']
+    pbar_main = tqdm(model_names, desc="训练Final模型", leave=False)
+
+    for model_name in pbar_main:
+        model = model_dict[model_name]
+        model = model.to(device)
+
+        # 更新主进度条描述
+        pbar_main.set_description(f"训练 {model_name}")
+
+        # 获取对应的损失函数和输出类型
+        criterion_model, output_type = get_criterion_and_output_type(model_name)
+        is_binary = (output_type == 'binary')
+
+        # 为每个模型创建优化器
+        optimizer_model = optim.Adam(model.parameters(), lr=1e-3)
+
+        # 训练该模型
+        loss, acc, metrics, time_taken = train_epoch(
+            model, train_loader, criterion_model, optimizer_model, device, is_binary, model_name
+        )
+
+        models_metrics[model_name] = {
+            'loss': loss,
+            'accuracy': acc,
+            'metrics': metrics,
+            'time': time_taken
+        }
+        total_time += time_taken
+
+        # 更新主进度条后处理信息
+        pbar_main.set_postfix({
+            'loss': f'{loss:.4f}',
+            'acc': f'{acc:.4f}'
+        })
+
+    pbar_main.close()
+
+    # 计算Final模型的指标
+    final_loss = np.mean([m['loss'] for m in models_metrics.values()])
+    final_acc = np.mean([m['accuracy'] for m in models_metrics.values()])
+
+    # 合并详细指标
+    final_metrics = {
+        'accuracy': final_acc,
+        'macro_precision': np.mean([m['metrics']['macro_precision'] for m in models_metrics.values()]),
+        'macro_recall': np.mean([m['metrics']['macro_recall'] for m in models_metrics.values()]),
+        'macro_f1': np.mean([m['metrics']['macro_f1'] for m in models_metrics.values()]),
+        'ai_precision': np.mean([m['metrics']['ai_precision'] for m in models_metrics.values()]),
+        'ai_recall': np.mean([m['metrics']['ai_recall'] for m in models_metrics.values()]),
+        'ai_f1': np.mean([m['metrics']['ai_f1'] for m in models_metrics.values()]),
+        'nature_precision': np.mean([m['metrics']['nature_precision'] for m in models_metrics.values()]),
+        'nature_recall': np.mean([m['metrics']['nature_recall'] for m in models_metrics.values()]),
+        'nature_f1': np.mean([m['metrics']['nature_f1'] for m in models_metrics.values()]),
+        'confusion_matrix': None  # 无法直接合并混淆矩阵
+    }
+
+    return final_loss, final_acc, final_metrics, total_time
+
+
+def validate_epoch(model, val_loader, criterion, device, is_binary=False, model_type=None, epoch=0):
     """验证一个epoch"""
+    if model_type == 'final':
+        # 每个epoch都记录概率信息
+        log_probabilities = True
+        return validate_final_model(model, val_loader, criterion, device, epoch, log_probabilities)
+
     model.eval()
     running_loss = 0.0
     correct = 0
@@ -308,7 +498,10 @@ def validate_epoch(model, val_loader, criterion, device, is_binary=False):
     start_time = time.time()
 
     with torch.no_grad():
-        for inputs, labels in val_loader:
+        # 创建验证进度条
+        pbar = tqdm(val_loader, desc=f"验证", leave=False)
+
+        for inputs, labels in pbar:
             inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
 
@@ -332,9 +525,19 @@ def validate_epoch(model, val_loader, criterion, device, is_binary=False):
             correct += (preds == labels).sum().item()
             total += labels.size(0)
 
+            # 更新进度条显示
+            current_loss = running_loss / total
+            current_acc = correct / total
+            pbar.set_postfix({
+                'loss': f'{current_loss:.4f}',
+                'acc': f'{current_acc:.4f}'
+            })
+
             # 收集输出和标签用于详细指标计算
             all_outputs.append(outputs)
             all_labels.append(labels)
+
+        pbar.close()
 
     epoch_time = time.time() - start_time
 
@@ -349,21 +552,115 @@ def validate_epoch(model, val_loader, criterion, device, is_binary=False):
     return epoch_loss, epoch_acc, detailed_metrics, epoch_time
 
 
+def validate_final_model(model_dict, val_loader, criterion, device, epoch=0, log_probabilities=False):
+    """验证Final模型"""
+    # 分别验证四个模型并计算加权结果
+    models_metrics = {}
+    all_final_outputs = []
+    all_labels = []
+    total_time = 0
+
+    with torch.no_grad():
+        for batch_idx, (inputs, labels) in enumerate(val_loader):
+            inputs, labels = inputs.to(device), labels.to(device)
+
+            # 计算Final模型的输出
+            if log_probabilities and batch_idx % 100 == 0:  # 每隔100个batch记录一次
+                final_outputs, prob_info = forward_final_model(model_dict, inputs, device, record_probs=True)
+                # 记录第一个样本的概率信息
+                log_probability_info(prob_info, epoch, batch_idx, sample_idx=0)
+            else:
+                final_outputs = forward_final_model(model_dict, inputs, device)
+
+            all_final_outputs.append(final_outputs)
+            all_labels.append(labels)
+
+    # 计算Final模型的指标
+    all_final_outputs = torch.cat(all_final_outputs)
+    all_labels = torch.cat(all_labels)
+
+    # 计算损失
+    labels_binary = all_labels.float().unsqueeze(1)
+    final_loss = criterion(all_final_outputs, labels_binary).item()
+
+    # 计算准确率
+    final_preds = (all_final_outputs > 0.5).long().squeeze()
+    final_acc = (final_preds == all_labels).float().mean().item()
+
+    # 计算详细指标
+    final_metrics = compute_detailed_metrics(all_final_outputs, all_labels, is_binary=True)
+
+    # 分别验证每个模型
+    for model_name, model in model_dict.items():
+        if model_name != 'weights':
+            model = model.to(device)
+            model.eval()
+
+            with torch.no_grad():
+                all_outputs = []
+                all_labels_model = []
+
+                for inputs, labels in val_loader:
+                    inputs, labels = inputs.to(device), labels.to(device)
+                    outputs = model(inputs)
+                    all_outputs.append(outputs)
+                    all_labels_model.append(labels)
+
+                all_outputs = torch.cat(all_outputs)
+                all_labels_model = torch.cat(all_labels_model)
+
+                # 转换为概率
+                prob_outputs = convert_to_probability(all_outputs, model_name,
+                                                    model_name in ['co_occurrence', 'co_occurrence_optimized'])
+
+                # 计算准确率
+                preds = (prob_outputs > 0.5).long()
+                acc = (preds == all_labels_model).float().mean().item()
+
+                # 计算详细指标
+                metrics = compute_detailed_metrics(prob_outputs.unsqueeze(1) if prob_outputs.dim() == 1 else prob_outputs,
+                                                 all_labels_model, is_binary=True)
+
+                models_metrics[model_name] = {
+                    'accuracy': acc,
+                    'metrics': metrics
+                }
+
+    # 添加各个模型的指标到final_metrics
+    final_metrics['individual_models'] = models_metrics
+
+    return final_loss, final_acc, final_metrics, 0  # 时间暂时设为0
+
+
 def train_model(model_type, train_loader, val_loader, num_epochs, device, save_dir,
                 learning_rate=1e-3, batch_size=32, experiment_name=None):
     """训练指定模型"""
 
     # 创建模型
     model = create_model(model_type)
-    model = model.to(device)
+
+    # Final模型特殊处理
+    if model_type == 'final':
+        # 将各个模型移到设备
+        for model_name, sub_model in model.items():
+            if model_name != 'weights':
+                model[model_name] = sub_model.to(device)
+        # Final模型使用虚拟优化器
+        optimizer = optim.Adam([torch.tensor(0.0, requires_grad=True)], lr=learning_rate)  # 虚拟优化器
+    else:
+        model = model.to(device)
+        # 常规优化器
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     # 获取损失函数和输出类型
     criterion, output_type = get_criterion_and_output_type(model_type)
     is_binary = (output_type == 'binary')
 
-    # 优化器
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+    # 学习率调度器
+    if model_type != 'final':
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+    else:
+        scheduler = None  # Final模型不使用调度器
 
     # 实验记录器
     if experiment_name is None:
@@ -395,17 +692,40 @@ def train_model(model_type, train_loader, val_loader, num_epochs, device, save_d
     logger.log_dataset_info(dataset_info)
 
     # 记录模型指标
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    model_metrics = {
-        'total_parameters': total_params,
-        'trainable_parameters': trainable_params,
-        'model_size_mb': total_params * 4 / (1024 * 1024)  # 假设float32
-    }
+    if model_type == 'final':
+        # Final模型计算各个子模型的参数
+        total_params = 0
+        individual_params = {}
+        for model_name, sub_model in model.items():
+            if model_name != 'weights':
+                params = sum(p.numel() for p in sub_model.parameters())
+                total_params += params
+                individual_params[model_name] = params
+
+        model_metrics = {
+            'total_parameters': total_params,
+            'trainable_parameters': total_params,  # 假设所有参数都可训练
+            'model_size_mb': total_params * 4 / (1024 * 1024),  # 假设float32
+            'individual_models': individual_params
+        }
+    else:
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        model_metrics = {
+            'total_parameters': total_params,
+            'trainable_parameters': trainable_params,
+            'model_size_mb': total_params * 4 / (1024 * 1024)  # 假设float32
+        }
+
     logger.log_model_metrics(model_metrics)
 
     print(f"开始训练 {model_type} 模型...")
-    print(f"模型参数数量: {total_params:,}")
+    if model_type == 'final':
+        print(f"总参数数量: {total_params:,}")
+        for model_name, params in individual_params.items():
+            print(f"  {model_name}: {params:,} 参数")
+    else:
+        print(f"模型参数数量: {total_params:,}")
     print(f"训练数据: {len(train_loader.dataset)} 张图像")
     print(f"验证数据: {len(val_loader.dataset)} 张图像")
 
@@ -417,17 +737,20 @@ def train_model(model_type, train_loader, val_loader, num_epochs, device, save_d
 
         # 训练
         train_loss, train_acc, train_metrics, train_time = train_epoch(
-            model, train_loader, criterion, optimizer, device, is_binary
+            model, train_loader, criterion, optimizer, device, is_binary, model_type
         )
 
         # 验证
         val_loss, val_acc, val_metrics, val_time = validate_epoch(
-            model, val_loader, criterion, device, is_binary
+            model, val_loader, criterion, device, is_binary, model_type, epoch
         )
 
         # 学习率调度
-        current_lr = scheduler.get_last_lr()[0]
-        scheduler.step()
+        if scheduler is not None:
+            current_lr = scheduler.get_last_lr()[0]
+            scheduler.step()
+        else:
+            current_lr = learning_rate  # Final模型使用固定学习率
 
         epoch_time = train_time + val_time
 
@@ -453,22 +776,58 @@ def train_model(model_type, train_loader, val_loader, num_epochs, device, save_d
         tb_writer.add_scalar('Metrics/train_nature_f1', train_metrics['nature_f1'], epoch)
         tb_writer.add_scalar('Metrics/val_nature_f1', val_metrics['nature_f1'], epoch)
 
+        # 对于Final模型，额外记录各个子模型的指标
+        if model_type == 'final' and 'individual_models' in val_metrics:
+            for model_name, model_metrics in val_metrics['individual_models'].items():
+                tb_writer.add_scalar(f'Individual/{model_name}/val_accuracy', model_metrics['accuracy'], epoch)
+                tb_writer.add_scalar(f'Individual/{model_name}/val_f1', model_metrics['metrics']['macro_f1'], epoch)
+
         print(f"训练损失: {train_loss:.4f}, 训练准确率: {train_acc:.4f}")
         print(f"验证损失: {val_loss:.4f}, 验证准确率: {val_acc:.4f}")
         print(f"训练时间: {train_time:.2f}s, 验证时间: {val_time:.2f}s")
         print(f"学习率: {current_lr:.6f}")
         print(f"AI图像F1: {val_metrics['ai_f1']:.4f}, 自然图像F1: {val_metrics['nature_f1']:.4f}")
 
+        # 对于Final模型，打印各个子模型的准确率
+        if model_type == 'final' and 'individual_models' in val_metrics:
+            print("各个模型验证准确率:")
+            for model_name, model_metrics in val_metrics['individual_models'].items():
+                print(f"  {model_name}: {model_metrics['accuracy']:.4f}")
+
         # 保存最佳模型
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            model_path = os.path.join(save_dir, f"best_{model_type}_model.pth")
-            torch.save(model.state_dict(), model_path)
-            print(f"保存最佳模型到: {model_path}")
+            if model_type == 'final':
+                # Final模型保存所有子模型
+                model_path = os.path.join(save_dir, f"best_{model_type}_model")
+                os.makedirs(model_path, exist_ok=True)
+                for model_name, sub_model in model.items():
+                    if model_name != 'weights':
+                        sub_model_path = os.path.join(model_path, f"{model_name}.pth")
+                        torch.save(sub_model.state_dict(), sub_model_path)
+                # 保存权重
+                weights_path = os.path.join(model_path, "weights.pth")
+                torch.save(model['weights'], weights_path)
+                print(f"保存最佳Final模型到: {model_path}")
+            else:
+                model_path = os.path.join(save_dir, f"best_{model_type}_model.pth")
+                torch.save(model.state_dict(), model_path)
+                print(f"保存最佳模型到: {model_path}")
 
     # 保存最终模型
-    final_model_path = os.path.join(save_dir, f"final_{model_type}_model.pth")
-    torch.save(model.state_dict(), final_model_path)
+    if model_type == 'final':
+        final_model_path = os.path.join(save_dir, f"final_{model_type}_model")
+        os.makedirs(final_model_path, exist_ok=True)
+        for model_name, sub_model in model.items():
+            if model_name != 'weights':
+                sub_model_path = os.path.join(final_model_path, f"{model_name}.pth")
+                torch.save(sub_model.state_dict(), sub_model_path)
+        # 保存权重
+        weights_path = os.path.join(final_model_path, "weights.pth")
+        torch.save(model['weights'], weights_path)
+    else:
+        final_model_path = os.path.join(save_dir, f"final_{model_type}_model.pth")
+        torch.save(model.state_dict(), final_model_path)
 
     # 完成实验记录
     json_path = logger.finalize()
@@ -485,7 +844,7 @@ def train_model(model_type, train_loader, val_loader, num_epochs, device, save_d
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description='单独训练各个模型')
-    parser.add_argument('--model_type', type=str, default='gram_net', choices=['resnet', 'densenet', 'co_occurrence', 'gram_net'], help='要训练的模型类型')
+    parser.add_argument('--model_type', type=str, default='final', choices=['resnet', 'densenet', 'co_occurrence', 'gram_net', 'final'], help='要训练的模型类型')
     parser.add_argument('--data_dir', type=str, default='E:/data', help='数据根目录')
     # parser.add_argument('--data_dir', type=str, default='E:/code/data_test', help='数据根目录')
     parser.add_argument('--batch_size', type=int, default=32, help='批次大小')
