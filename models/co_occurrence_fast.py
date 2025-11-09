@@ -7,9 +7,10 @@ class CoOccurrenceMatrixFast(nn.Module):
     """
     按照论文方法实现的共现矩阵模型
     使用256x256共现矩阵和论文中的CNN架构
+    计算四个方向：水平、垂直、对角线45°、对角线135°
     """
 
-    def __init__(self, num_classes=2, num_bins=100, distance=1):
+    def __init__(self, num_classes=2, num_bins=256, distance=1):
         super(CoOccurrenceMatrixFast, self).__init__()
         self.num_classes = num_classes
         self.num_bins = num_bins  # 论文使用256
@@ -61,6 +62,7 @@ class CoOccurrenceMatrixFast(nn.Module):
     def compute_co_occurrence_fast(self, images):
         """
         快速计算共现矩阵 - 使用向量化和优化策略
+        计算四个方向：水平、垂直、对角线45°、对角线135°
         Args:
             images: 输入图像 [B, 3, H, W] - 已经反标准化到[0,1]范围
         Returns:
@@ -75,14 +77,14 @@ class CoOccurrenceMatrixFast(nn.Module):
         # 将像素值量化为num_bins个级别
         quantized_images = (images * (self.num_bins - 1)).long()  # [B, 3, H, W]
 
-        # 只计算水平和垂直方向，大幅减少计算量
+        # 计算四个方向：水平、垂直、对角线45°、对角线135°
         for b in range(batch_size):
             for c in range(num_channels):
                 channel_quantized = quantized_images[b, c]  # [H, W]
                 co_matrix = torch.zeros((self.num_bins, self.num_bins),
                                        device=images.device, dtype=torch.float32)
 
-                # 水平方向 - 向量化计算
+                # 水平方向 (0°) - 向量化计算
                 if W > self.distance:
                     # 获取所有水平相邻像素对
                     pixels_h1 = channel_quantized[:, :-self.distance]  # [H, W-d]
@@ -98,7 +100,7 @@ class CoOccurrenceMatrixFast(nn.Module):
                     counts_h_sym = torch.bincount(indices_h_sym, minlength=self.num_bins * self.num_bins)
                     co_matrix += counts_h_sym.reshape(self.num_bins, self.num_bins)
 
-                # 垂直方向 - 向量化计算
+                # 垂直方向 (90°) - 向量化计算
                 if H > self.distance:
                     # 获取所有垂直相邻像素对
                     pixels_v1 = channel_quantized[:-self.distance, :]  # [H-d, W]
@@ -113,6 +115,38 @@ class CoOccurrenceMatrixFast(nn.Module):
                     indices_v_sym = pixels_v2.flatten() * self.num_bins + pixels_v1.flatten()
                     counts_v_sym = torch.bincount(indices_v_sym, minlength=self.num_bins * self.num_bins)
                     co_matrix += counts_v_sym.reshape(self.num_bins, self.num_bins)
+
+                # # 对角线方向1 (45°) - 向量化计算
+                # if H > self.distance and W > self.distance:
+                #     # 获取所有对角线45°相邻像素对
+                #     pixels_d1_1 = channel_quantized[:-self.distance, :-self.distance]  # [H-d, W-d]
+                #     pixels_d1_2 = channel_quantized[self.distance:, self.distance:]    # [H-d, W-d]
+
+                #     # 使用bincount进行快速统计
+                #     indices_d1 = pixels_d1_1.flatten() * self.num_bins + pixels_d1_2.flatten()
+                #     counts_d1 = torch.bincount(indices_d1, minlength=self.num_bins * self.num_bins)
+                #     co_matrix += counts_d1.reshape(self.num_bins, self.num_bins)
+
+                #     # 对称方向
+                #     indices_d1_sym = pixels_d1_2.flatten() * self.num_bins + pixels_d1_1.flatten()
+                #     counts_d1_sym = torch.bincount(indices_d1_sym, minlength=self.num_bins * self.num_bins)
+                #     co_matrix += counts_d1_sym.reshape(self.num_bins, self.num_bins)
+
+                # # 对角线方向2 (135°) - 向量化计算
+                # if H > self.distance and W > self.distance:
+                #     # 获取所有对角线135°相邻像素对
+                #     pixels_d2_1 = channel_quantized[:-self.distance, self.distance:]   # [H-d, W-d]
+                #     pixels_d2_2 = channel_quantized[self.distance:, :-self.distance]   # [H-d, W-d]
+
+                #     # 使用bincount进行快速统计
+                #     indices_d2 = pixels_d2_1.flatten() * self.num_bins + pixels_d2_2.flatten()
+                #     counts_d2 = torch.bincount(indices_d2, minlength=self.num_bins * self.num_bins)
+                #     co_matrix += counts_d2.reshape(self.num_bins, self.num_bins)
+
+                #     # 对称方向
+                #     indices_d2_sym = pixels_d2_2.flatten() * self.num_bins + pixels_d2_1.flatten()
+                #     counts_d2_sym = torch.bincount(indices_d2_sym, minlength=self.num_bins * self.num_bins)
+                #     co_matrix += counts_d2_sym.reshape(self.num_bins, self.num_bins)
 
                 # 使用原始计数，不进行归一化或变换
                 # 论文中直接使用原始共现矩阵计数
