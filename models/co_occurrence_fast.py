@@ -8,7 +8,6 @@ class CoOccurrenceMatrixFast(nn.Module):
     """
     按照论文方法实现的共现矩阵模型
     使用256x256共现矩阵和论文中的CNN架构
-    计算四个方向：水平、垂直、对角线45°、对角线135°
     """
 
     def __init__(self, num_classes=2, num_bins=256, distance=1):
@@ -79,14 +78,14 @@ class CoOccurrenceMatrixFast(nn.Module):
         # 将像素值量化为num_bins个级别
         quantized_images = (images * (self.num_bins - 1)).long()  # [B, 3, H, W]
 
-        # 计算四个方向：水平、垂直、对角线45°、对角线135°
+        # 只计算水平和垂直方向，大幅减少计算量
         for b in range(batch_size):
             for c in range(num_channels):
                 channel_quantized = quantized_images[b, c]  # [H, W]
                 co_matrix = torch.zeros((self.num_bins, self.num_bins),
                                        device=images.device, dtype=torch.float32)
 
-                # 水平方向 (0°) - 向量化计算
+                # 水平方向 - 向量化计算
                 if W > self.distance:
                     # 获取所有水平相邻像素对
                     pixels_h1 = channel_quantized[:, :-self.distance]  # [H, W-d]
