@@ -459,7 +459,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, is_binary=Fal
 
         loss.backward()
 
-        # 针对共现矩阵模型添加梯度裁剪
+        #针对共现矩阵模型添加梯度裁剪
         if model_type == 'co_occurrence':
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
@@ -774,9 +774,31 @@ def train_model(model_type, train_loader, val_loader, num_epochs, device, save_d
 
     # 学习率调度器
     if model_type != 'final':
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+        if model_type == 'co_occurrence':
+            # 共现矩阵模型使用更精细的学习率调度
+            # 预热阶段：前5个epoch使用较低学习率
+            warmup_epochs = 5
+            # 余弦退火调度器
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=num_epochs - warmup_epochs, eta_min=1e-6
+            )
+            # 基于验证损失的动态调整
+            plateau_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', factor=0.5, patience=5
+            )
+            # 预热阶段学习率调整
+            warmup_scheduler = optim.lr_scheduler.LambdaLR(
+                optimizer, lr_lambda=lambda epoch: min(1.0, epoch / warmup_epochs)
+            )
+        else:
+            # 其他模型使用StepLR
+            scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+            plateau_scheduler = None
+            warmup_scheduler = None
     else:
         scheduler = None  # Final模型不使用调度器
+        plateau_scheduler = None
+        warmup_scheduler = None
 
     # 实验记录器
     if experiment_name is None:
@@ -842,6 +864,15 @@ def train_model(model_type, train_loader, val_loader, num_epochs, device, save_d
             print(f"  {model_name}: {params:,} 参数")
     else:
         print(f"模型参数数量: {total_params:,}")
+
+    # 共现矩阵模型显示学习率调度信息
+    if model_type == 'co_occurrence':
+        print(f"学习率调度策略:")
+        print(f"  - 预热阶段: 前{warmup_epochs}个epoch")
+        print(f"  - 余弦退火: {num_epochs - warmup_epochs}个epoch")
+        print(f"  - 动态调整: 基于验证损失, patience=5")
+        print(f"  - 最小学习率: 1e-6")
+
     print(f"训练数据: {len(train_loader.dataset)} 张图像")
     print(f"验证数据: {len(val_loader.dataset)} 张图像")
 
@@ -864,7 +895,22 @@ def train_model(model_type, train_loader, val_loader, num_epochs, device, save_d
         # 学习率调度
         if scheduler is not None:
             current_lr = scheduler.get_last_lr()[0]
-            scheduler.step()
+
+            # 共现矩阵模型使用特殊的学习率调度逻辑
+            if model_type == 'co_occurrence' and plateau_scheduler is not None:
+                # 预热阶段学习率调整
+                if warmup_scheduler is not None and epoch < warmup_epochs:
+                    warmup_scheduler.step()
+                    current_lr = optimizer.param_groups[0]['lr']
+                else:
+                    # 基于验证损失的动态调整
+                    plateau_scheduler.step(val_loss)
+                    # 余弦退火调度（跳过预热阶段）
+                    if epoch >= warmup_epochs:
+                        scheduler.step()
+            else:
+                # 其他模型使用常规调度
+                scheduler.step()
         else:
             current_lr = learning_rate  # Final模型使用固定学习率
 
@@ -910,6 +956,13 @@ def train_model(model_type, train_loader, val_loader, num_epochs, device, save_d
         print(f"训练时间: {train_time:.2f}s, 验证时间: {val_time:.2f}s")
         print(f"学习率: {current_lr:.6f}")
         print(f"AI图像F1: {val_metrics['ai_f1']:.4f}, 自然图像F1: {val_metrics['nature_f1']:.4f}")
+
+        # 共现矩阵模型额外显示学习率调度信息
+        if model_type == 'co_occurrence':
+            if epoch < warmup_epochs:
+                print(f"[预热阶段] 当前学习率: {current_lr:.6f}")
+            else:
+                print(f"[训练阶段] 当前学习率: {current_lr:.6f}")
 
         # 对于Final模型，打印各个子模型的准确率
         if model_type == 'final' and 'individual_models' in val_metrics:
