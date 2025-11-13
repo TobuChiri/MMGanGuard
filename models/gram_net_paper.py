@@ -193,6 +193,9 @@ class GramNetPaper(nn.Module):
         self.fc256 = nn.Linear(512, 256)  # fc256层
         self.fc2 = nn.Linear(256, num_classes)  # FC2层
 
+        # Gram特征适配器层
+        self.gram_adapter = nn.Linear(288, 256)  # 将Gram特征从288维映射到256维
+
         # 初始化权重
         self._initialize_weights()
 
@@ -267,9 +270,7 @@ class GramNetPaper(nn.Module):
         all_gram_features = torch.stack(gram_features, dim=0).sum(dim=0)  # [B, 288]
 
         # 由于Gram特征维度(288)与fc256特征维度(256)不同，需要调整
-        # 使用一个线性层将Gram特征映射到256维度
-        if not hasattr(self, 'gram_adapter'):
-            self.gram_adapter = nn.Linear(288, 256).to(x.device)
+        # 使用gram_adapter层将Gram特征映射到256维度
         adapted_gram_features = self.gram_adapter(all_gram_features)  # [B, 256]
 
         # 与GramBlock结果相加

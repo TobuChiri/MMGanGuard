@@ -385,7 +385,7 @@ def print_comparison_table(data):
 def main():
     """主函数"""
     # JSON文件路径
-    json_path = "checkpoints/mmganguard_20251031_205148.json"
+    json_path = "checkpoints/final_20251111_014443.json"
 
     # 检查文件是否存在
     if not os.path.exists(json_path):

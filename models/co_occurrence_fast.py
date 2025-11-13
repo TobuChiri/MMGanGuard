@@ -10,7 +10,7 @@ class CoOccurrenceMatrixFast(nn.Module):
     使用256x256共现矩阵和论文中的CNN架构
     """
 
-    def __init__(self, num_classes=2, num_bins=256, distance=1):
+    def __init__(self, num_classes=2, num_bins=64, distance=1):
         super(CoOccurrenceMatrixFast, self).__init__()
         self.num_classes = num_classes
         self.num_bins = num_bins  # 论文使用256
@@ -71,6 +71,7 @@ class CoOccurrenceMatrixFast(nn.Module):
         """
         batch_size, num_channels, H, W = images.shape
 
+
         # 初始化共现矩阵数组
         co_matrices = torch.zeros((batch_size, num_channels, self.num_bins, self.num_bins),
                                  device=images.device, dtype=torch.float32)
@@ -107,33 +108,29 @@ class CoOccurrenceMatrixFast(nn.Module):
                     counts_v = torch.bincount(indices_v, minlength=self.num_bins * self.num_bins)
                     co_matrix += counts_v.reshape(self.num_bins, self.num_bins)
 
-                # # 对角线方向1 (45°) - 向量化计算
-                # if H > self.distance and W > self.distance:
-                #     # 获取所有对角线45°相邻像素对
-                #     pixels_d1_1 = channel_quantized[:-self.distance, :-self.distance]  # [H-d, W-d]
-                #     pixels_d1_2 = channel_quantized[self.distance:, self.distance:]    # [H-d, W-d]
+                # 对角线方向1 (45°) - 向量化计算
+                if H > self.distance and W > self.distance:
+                    # 获取所有对角线45°相邻像素对
+                    pixels_d1_1 = channel_quantized[:-self.distance, :-self.distance]  # [H-d, W-d]
+                    pixels_d1_2 = channel_quantized[self.distance:, self.distance:]    # [H-d, W-d]
 
-                #     # 使用bincount进行快速统计
-                #     indices_d1 = pixels_d1_1.flatten() * self.num_bins + pixels_d1_2.flatten()
-                #     counts_d1 = torch.bincount(indices_d1, minlength=self.num_bins * self.num_bins)
-                #     co_matrix += counts_d1.reshape(self.num_bins, self.num_bins)
+                    # 使用bincount进行快速统计
+                    indices_d1 = pixels_d1_1.flatten() * self.num_bins + pixels_d1_2.flatten()
+                    counts_d1 = torch.bincount(indices_d1, minlength=self.num_bins * self.num_bins)
+                    co_matrix += counts_d1.reshape(self.num_bins, self.num_bins)
 
-                # # 对角线方向2 (135°) - 向量化计算
-                # if H > self.distance and W > self.distance:
-                #     # 获取所有对角线135°相邻像素对
-                #     pixels_d2_1 = channel_quantized[:-self.distance, self.distance:]   # [H-d, W-d]
-                #     pixels_d2_2 = channel_quantized[self.distance:, :-self.distance]   # [H-d, W-d]
+                # 对角线方向2 (135°) - 向量化计算
+                if H > self.distance and W > self.distance:
+                    # 获取所有对角线135°相邻像素对
+                    pixels_d2_1 = channel_quantized[:-self.distance, self.distance:]   # [H-d, W-d]
+                    pixels_d2_2 = channel_quantized[self.distance:, :-self.distance]   # [H-d, W-d]
 
-                #     # 使用bincount进行快速统计
-                #     indices_d2 = pixels_d2_1.flatten() * self.num_bins + pixels_d2_2.flatten()
-                #     counts_d2 = torch.bincount(indices_d2, minlength=self.num_bins * self.num_bins)
-                #     co_matrix += counts_d2.reshape(self.num_bins, self.num_bins)
+                    # 使用bincount进行快速统计
+                    indices_d2 = pixels_d2_1.flatten() * self.num_bins + pixels_d2_2.flatten()
+                    counts_d2 = torch.bincount(indices_d2, minlength=self.num_bins * self.num_bins)
+                    co_matrix += counts_d2.reshape(self.num_bins, self.num_bins)
 
-                # 按照论文描述进行归一化
-                total_pairs = co_matrix.sum()
-                if total_pairs > 0:
-                    co_matrix = co_matrix / total_pairs
-
+                # 将计算好的共现矩阵赋值给结果数组
                 co_matrices[b, c] = co_matrix
 
         return co_matrices
@@ -171,23 +168,23 @@ class CoOccurrenceMatrixFast(nn.Module):
                     pixels_h2 = channel_quantized[:, self.distance:].flatten()
                     pixel_pairs.extend(zip(pixels_h1.tolist(), pixels_h2.tolist()))
 
-                # 垂直方向像素对
-                if H > self.distance:
-                    pixels_v1 = channel_quantized[:-self.distance, :].flatten()
-                    pixels_v2 = channel_quantized[self.distance:, :].flatten()
-                    pixel_pairs.extend(zip(pixels_v1.tolist(), pixels_v2.tolist()))
+                # # 垂直方向像素对
+                # if H > self.distance:
+                #     pixels_v1 = channel_quantized[:-self.distance, :].flatten()
+                #     pixels_v2 = channel_quantized[self.distance:, :].flatten()
+                #     pixel_pairs.extend(zip(pixels_v1.tolist(), pixels_v2.tolist()))
 
-                # 对角线45°方向像素对
-                if H > self.distance and W > self.distance:
-                    pixels_d1_1 = channel_quantized[:-self.distance, :-self.distance].flatten()
-                    pixels_d1_2 = channel_quantized[self.distance:, self.distance:].flatten()
-                    pixel_pairs.extend(zip(pixels_d1_1.tolist(), pixels_d1_2.tolist()))
+                # # 对角线45°方向像素对
+                # if H > self.distance and W > self.distance:
+                #     pixels_d1_1 = channel_quantized[:-self.distance, :-self.distance].flatten()
+                #     pixels_d1_2 = channel_quantized[self.distance:, self.distance:].flatten()
+                #     pixel_pairs.extend(zip(pixels_d1_1.tolist(), pixels_d1_2.tolist()))
 
-                # 对角线135°方向像素对
-                if H > self.distance and W > self.distance:
-                    pixels_d2_1 = channel_quantized[:-self.distance, self.distance:].flatten()
-                    pixels_d2_2 = channel_quantized[self.distance:, :-self.distance].flatten()
-                    pixel_pairs.extend(zip(pixels_d2_1.tolist(), pixels_d2_2.tolist()))
+                # # 对角线135°方向像素对
+                # if H > self.distance and W > self.distance:
+                #     pixels_d2_1 = channel_quantized[:-self.distance, self.distance:].flatten()
+                #     pixels_d2_2 = channel_quantized[self.distance:, :-self.distance].flatten()
+                #     pixel_pairs.extend(zip(pixels_d2_1.tolist(), pixels_d2_2.tolist()))
 
                 # 使用2D直方图统计像素对频率
                 if pixel_pairs:
