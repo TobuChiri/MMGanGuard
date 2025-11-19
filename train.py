@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-单独训练各个模型并记录详细性能指标
-支持: resnet, densenet, co_occurrence, gram_net
-记录: 运行时间、精确率、召回率、F1-score、准确率、损失、学习率
-数据保存到JSON文件和TensorBoard
+文件名：train.py
+文件内容：单独训练各个模型并记录详细性能指标，包括resnet, densenet, co_occurrence, gram_net及final模型
+日志记录: 运行时间、精确率、召回率、F1-score、准确率、损失、学习率，数据保存到JSON文件和TensorBoard
 """
 
 import os
@@ -29,11 +28,34 @@ from models.co_occurrence_fast import create_co_occurrence_fast_model
 from models.gram_net_paper import create_gram_net_paper_model as create_gram_net_model
 import torchvision.models as models
 
-
+"""
+类：DetailedExperimentLogger
+功能：详细记录实验数据到JSON文件，包括超参数、训练历史、性能指标等
+输入：save_dir (保存路径)、experiment_name (实验名称)
+输出：无
+"""
 class DetailedExperimentLogger:
-    """详细实验数据记录器"""
 
     def __init__(self, save_dir, experiment_name):
+        """
+        函数：
+        功能：初始化实验记录器
+        输入：
+            save_dir (str): 保存实验数据的目录路径
+            experiment_name (str): 实验名称，用于生成JSON文件名
+        输出：无返回值。初始化以下实例属性：
+                - self.save_dir: 数据保存目录
+                - self.experiment_name: 实验名称  
+                - self.experiment_data (dict): 存储所有实验数据，包含：
+                * experiment_info: 实验基本信息（名称、开始/结束时间、总耗时）
+                * hyperparameters: 超参数配置
+                * training_history: 各epoch的训练记录
+                * detailed_metrics: 详细性能指标
+                * model_metrics: 模型参数统计
+                * dataset_info: 数据集信息
+                * best_epoch: 最佳epoch信息
+                * training_summary: 训练总结
+        """
         self.save_dir = save_dir
         self.experiment_name = experiment_name
         os.makedirs(save_dir, exist_ok=True)
@@ -75,16 +97,57 @@ class DetailedExperimentLogger:
         self.experiment_data['experiment_info']['start_time'] = datetime.datetime.now().isoformat()
 
     def log_hyperparameters(self, hyperparams):
-        """记录超参数"""
+        """
+        函数：log_hyperparameters
+        功能：记录模型训练的超参数
+        输入：
+            hyperparams (dict): 超参数字典，包含如下键值对：
+                - model_type (str): 模型类型
+                - batch_size (int): 批次大小
+                - num_epochs (int): 训练轮数
+                - learning_rate (float): 学习率
+                - device (str): 计算设备
+                - output_type (str): 输出类型
+        输出：
+            无返回值。将超参数存储到self.experiment_data['hyperparameters']中
+        """
         self.experiment_data['hyperparameters'] = hyperparams
 
     def log_dataset_info(self, dataset_info):
-        """记录数据集信息"""
+        """
+        函数：log_dataset_info
+        功能：记录数据集基本信息
+        输入：
+            dataset_info (dict): 数据集信息字典，包含：
+                - train_size (int): 训练集样本数
+                - val_size (int): 验证集样本数
+                - batch_size (int): 批次大小
+        输出：
+            无返回值。将数据集信息存储到self.experiment_data['dataset_info']中
+        """
         self.experiment_data['dataset_info'] = dataset_info
 
     def log_epoch(self, epoch, train_loss, train_acc, val_loss, val_acc, lr, epoch_time,
                   train_metrics=None, val_metrics=None):
-        """记录每个epoch的数据并立即保存到JSON文件"""
+        """
+        函数：log_epoch
+        功能：记录单个epoch的训练和验证数据并立即保存到JSON文件
+        输入：
+            epoch (int): 当前epoch索引（从0开始）
+            train_loss (float): 训练集损失值
+            train_acc (float): 训练集准确率（0-1之间）
+            val_loss (float): 验证集损失值
+            val_acc (float): 验证集准确率（0-1之间）
+            lr (float): 当前学习率
+            epoch_time (float): 本epoch耗时（秒）
+            train_metrics (dict, optional): 训练集详细指标（precision, recall, f1等）
+            val_metrics (dict, optional): 验证集详细指标
+        输出：
+            无返回值。更新以下内容：
+            - 将数据追加到training_history的各个列表中
+            - 如果当前验证准确率更高，更新best_epoch信息
+            - 自动调用save_to_json()保存数据到JSON文件
+        """
         self.experiment_data['training_history']['epochs'].append(epoch)
         self.experiment_data['training_history']['train_loss'].append(train_loss)
         self.experiment_data['training_history']['train_accuracy'].append(train_acc)
@@ -108,18 +171,56 @@ class DetailedExperimentLogger:
         self.save_to_json()
 
     def save_to_json(self):
-        """将当前实验数据保存到JSON文件"""
+        """
+        函数：save_to_json
+        功能：将当前实验数据保存到JSON文件
+        输入：
+            无输入参数。使用self.experiment_data和self.save_dir
+        输出：
+            无返回值。在文件系统中创建/更新JSON文件：
+            - 文件路径：{save_dir}/{experiment_name}.json
+            - 文件内容：将experiment_data序列化为格式化的JSON格式
+        """
         json_path = self.get_json_path()
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(self.experiment_data, f, indent=2, ensure_ascii=False)
         print(f"实验数据已更新到: {json_path}")
 
     def log_model_metrics(self, model_metrics):
-        """记录模型指标"""
+        """
+        函数：log_model_metrics
+        功能：记录模型参数统计和大小信息
+        输入：
+            model_metrics (dict): 模型指标字典，包含：
+                - total_parameters (int): 总参数数量
+                - trainable_parameters (int): 可训练参数数量
+                - model_size_mb (float): 模型大小（MB）
+                - individual_models (dict, optional): 各子模型参数统计（仅Final模型）
+        输出：
+            无返回值。将模型指标存储到self.experiment_data['model_metrics']中
+        """
         self.experiment_data['model_metrics'] = model_metrics
 
     def finalize(self):
-        """完成实验记录"""
+        """
+        函数：finalize
+        功能：完成实验记录并生成训练总结
+        输入：
+            无输入参数。使用self.experiment_data中的历史数据
+        输出：
+            json_path (str): 保存的JSON文件路径
+            同时更新以下内容：
+            - 计算并记录总训练耗时
+            - 生成training_summary包含：
+              * total_training_time: 总耗时（秒）
+              * final_train_accuracy: 最终训练准确率
+              * final_val_accuracy: 最终验证准确率
+              * final_train_loss: 最终训练损失
+              * final_val_loss: 最终验证损失
+              * best_val_accuracy: 最佳验证准确率
+              * best_epoch: 最佳epoch索引
+            - 自动保存更新后的JSON文件
+        """
         end_time = datetime.datetime.now()
         start_time = datetime.datetime.fromisoformat(
             self.experiment_data['experiment_info']['start_time']
@@ -146,21 +247,38 @@ class DetailedExperimentLogger:
         return self.get_json_path()
 
     def get_json_path(self):
-        """获取JSON文件路径"""
+        """
+        函数：get_json_path
+        功能：获取实验数据保存的JSON文件路径
+        输入：
+            无输入参数。使用self.save_dir和self.experiment_name
+        输出：
+            json_path (str): JSON文件的完整路径，格式为 {save_dir}/{experiment_name}.json
+        """
         return os.path.join(self.save_dir, f"{self.experiment_name}.json")
 
 
 def compute_detailed_metrics(outputs, labels, is_binary=False):
     """
-    计算详细的性能指标
-
-    Args:
-        outputs: 模型输出
-        labels: 真实标签
-        is_binary: 是否为二元分类
-
-    Returns:
-        dict: 包含各项指标的字典
+    函数：compute_detailed_metrics
+    功能：计算详细的性能指标，包括精确率、召回率、F1-score等
+    输入：
+        outputs (torch.Tensor): 模型输出，形状为(batch_size,) 或 (batch_size, num_classes)
+        labels (torch.Tensor): 真实标签，形状为(batch_size,)
+        is_binary (bool): 是否为二元分类，默认False
+    输出：
+        dict: 包含以下性能指标的字典：
+            - accuracy (float): 整体准确率
+            - macro_precision (float): 宏平均精确率
+            - macro_recall (float): 宏平均召回率
+            - macro_f1 (float): 宏平均F1-score
+            - ai_precision (float): AI类别精确率
+            - ai_recall (float): AI类别召回率
+            - ai_f1 (float): AI类别F1-score
+            - nature_precision (float): 自然类别精确率
+            - nature_recall (float): 自然类别召回率
+            - nature_f1 (float): 自然类别F1-score
+            - confusion_matrix (list): 混淆矩阵的列表形式
     """
     if is_binary:
         # 二元分类
@@ -221,7 +339,25 @@ def compute_detailed_metrics(outputs, labels, is_binary=False):
 
 
 def create_model(model_type, num_classes=2, pretrained=True):
-    """创建指定类型的模型"""
+    """
+    函数：create_model
+    功能：创建指定类型的模型
+    输入：
+        model_type (str): 模型类型，支持：'resnet', 'densenet', 'co_occurrence', 'gram_net', 'final'
+        num_classes (int): 分类类数，默认为2（二元分类）
+        pretrained (bool): 是否加载预训练权重，默认为True
+    输出：
+        model (torch.nn.Module 或 dict): 
+            - 对于其他模型类型：返回PyTorch模型对象
+            - 对于'final'类型：返回字典，包含：
+              * 'resnet': ResNet50模型
+              * 'densenet': DenseNet201模型
+              * 'co_occurrence': 共现矩阵模型
+              * 'gram_net': GramNet模型
+              * 'weights': 权重张量[0.2, 0.6, 0.1, 0.1]
+    异常：
+        ValueError: 当model_type不在支持列表中时抛出
+    """
     if model_type == 'resnet':
         model = models.resnet50(pretrained=pretrained)
         num_features = model.fc.in_features
@@ -260,7 +396,18 @@ def create_model(model_type, num_classes=2, pretrained=True):
 
 
 def get_criterion_and_output_type(model_type):
-    """根据模型类型返回对应的损失函数和输出类型"""
+    """
+    函数：get_criterion_and_output_type
+    功能：根据模型类型返回对应的损失函数和输出类型
+    输入：
+        model_type (str): 模型类型，支持：'resnet', 'densenet', 'co_occurrence', 'gram_net', 'final'
+    输出：
+        tuple: (criterion, output_type)
+            - criterion (torch.nn.Module): 损失函数对象
+              * co_occurrence或final模型：nn.BCELoss()（二元交叉熵）
+              * 其他模型：nn.CrossEntropyLoss()（交叉熵）
+            - output_type (str): 输出类型，'binary' 或 'multi_class'
+    """
     if model_type == 'co_occurrence':
         return nn.BCELoss(), 'binary'
     elif model_type == 'final':
@@ -271,7 +418,18 @@ def get_criterion_and_output_type(model_type):
 
 
 def convert_to_probability(outputs, model_type, is_binary=False):
-    """将模型输出转换为真实图像的概率"""
+    """
+    函数：convert_to_probability
+    功能：将模型输出转换为真实图像的概率值
+    输入：
+        outputs (torch.Tensor): 模型输出，shape为(batch_size, num_classes)或(batch_size,)
+        model_type (str): 模型类型
+        is_binary (bool): 是否为二元分类模型
+    输出：
+        torch.Tensor: 真实图像的概率值
+            - 对于二元分类（co_occurrence或final）：直接返回输出
+            - 对于多分类（resnet、densenet、gram_net）：返回softmax后第1类的概率
+    """
     if model_type == 'final':
         # Final模型已经输出概率
         return outputs
@@ -287,7 +445,22 @@ def convert_to_probability(outputs, model_type, is_binary=False):
 
 
 def log_probability_info(prob_info, epoch, batch_idx, sample_idx=0, log_file="probability_log.txt"):
-    """将概率信息记录到文件中"""
+    """
+    函数：log_probability_info
+    功能：将概率信息详细记录到文本日志文件中
+    输入：
+        prob_info (dict): 概率信息字典，包含individual_probs、weights、weighted_probs、final_prob
+        epoch (int): 当前epoch索引
+        batch_idx (int): 当前batch索引
+        sample_idx (int): 样本索引，默认为0
+        log_file (str): 日志文件名，默认为"probability_log.txt"
+    输出：
+        无返回值。在日志文件中追加写入：
+            - Epoch和Batch信息
+            - 各个模型的输出概率
+            - 权重值和加权后的概率
+            - 最终加权概率和预测结果
+    """
     import datetime
 
     with open(log_file, "a", encoding="utf-8") as f:
@@ -319,15 +492,22 @@ def log_probability_info(prob_info, epoch, batch_idx, sample_idx=0, log_file="pr
 def log_validation_batch(model_type, outputs, labels, epoch, batch_idx, log_file="validation_detailed.log",
                         individual_model_outputs=None):
     """
-    记录每个验证batch的详细输出概率和真实值
-    Args:
-        model_type: 模型类型
-        outputs: 模型输出
-        labels: 真实标签
-        epoch: 当前epoch
-        batch_idx: 当前batch索引
-        log_file: 日志文件名
-        individual_model_outputs: 各个子模型的输出字典 {model_name: output_tensor}
+    函数：log_validation_batch
+    功能：记录每个验证batch的详细输出概率、预测和真实值到日志文件
+    输入：
+        model_type (str): 模型类型
+        outputs (torch.Tensor): 主模型输出
+        labels (torch.Tensor): 真实标签
+        epoch (int): 当前epoch索引
+        batch_idx (int): 当前batch索引
+        log_file (str): 日志文件名，默认为"validation_detailed.log"
+        individual_model_outputs (dict, optional): 各子模型的输出字典 {model_name: output_tensor}
+    输出：
+        无返回值。在日志文件中追加写入：
+            - 验证批次的时间戳和基本信息
+            - 每个样本的输出概率、预测结果和真实标签
+            - 各子模型的输出（如有）
+            - 批次准确率统计和各子模型的准确率（如有）
     """
     import datetime
 
@@ -431,7 +611,20 @@ def log_validation_batch(model_type, outputs, labels, epoch, batch_idx, log_file
 
 
 def forward_final_model(model_dict, x, device, record_probs=False):
-    """Final模型的前向传播"""
+    """
+    函数：forward_final_model
+    功能：Final模型的前向传播，计算各子模型的加权平均输出
+    输入：
+        model_dict (dict): 包含四个子模型的字典 {resnet, densenet, co_occurrence, gram_net, weights}
+        x (torch.Tensor): 输入张量，shape为(batch_size, 3, 256, 256)
+        device (str): 计算设备('cuda'或'cpu')
+        record_probs (bool): 是否记录各子模型的概率，默认False
+    输出：
+        如果record_probs为False：
+            final_prob (torch.Tensor): 最终加权概率，shape为(batch_size, 1)
+        如果record_probs为True：
+            tuple: (final_prob, prob_info)其中prob_info包含各模型概率和权重信息
+    """
     weights = model_dict['weights'].to(device)
 
     # 获取四个模型的输出概率
@@ -472,7 +665,27 @@ def forward_final_model(model_dict, x, device, record_probs=False):
 
 
 def train_epoch(model, train_loader, criterion, optimizer, device, is_binary=False, model_type=None):
-    """训练一个epoch"""
+    """
+    函数：train_epoch
+    功能：训练模型一个epoch，更新模型参数并计算性能指标
+    输入：
+        model (torch.nn.Module 或 dict): 模型对象（Final模型时为字典）
+        train_loader (DataLoader): 训练数据加载器
+        criterion (torch.nn.Module): 损失函数
+        optimizer (torch.optim.Optimizer): 优化器
+        device (str): 计算设备
+        is_binary (bool): 是否为二元分类，默认False
+        model_type (str): 模型类型，用于特殊处理
+    输出：
+        tuple: (epoch_loss, epoch_acc, detailed_metrics, epoch_time)
+            - epoch_loss (float): 整个epoch的平均损失
+            - epoch_acc (float): 整个epoch的准确率
+            - detailed_metrics (dict): 详细性能指标
+            - epoch_time (float): epoch耗时（秒）
+    特殊处理：
+        - 当model_type为'final'时，调用train_final_epoch
+        - 当model_type为'co_occurrence'时，使用梯度裁剪
+    """
     if model_type == 'final':
         return train_final_epoch(model, train_loader, criterion, optimizer, device)
 
@@ -549,7 +762,25 @@ def train_epoch(model, train_loader, criterion, optimizer, device, is_binary=Fal
 
 
 def train_final_epoch(model_dict, train_loader, criterion, optimizer, device):
-    """训练Final模型的一个epoch"""
+    """
+    函数：train_final_epoch
+    功能：训练Final模型的一个epoch（分别训练四个子模型）
+    输入：
+        model_dict (dict): 包含四个子模型的字典
+        train_loader (DataLoader): 训练数据加载器
+        criterion (torch.nn.Module): 损失函数
+        optimizer (torch.optim.Optimizer): 虚拟优化器（实际为每个子模型创建独立优化器）
+        device (str): 计算设备
+    输出：
+        tuple: (final_loss, final_acc, final_metrics, total_time)
+            - final_loss (float): 四个模型损失的平均值
+            - final_acc (float): 四个模型准确率的平均值
+            - final_metrics (dict): 合并的详细指标及individual_models子模型指标
+            - total_time (float): 总耗时（秒）
+    特殊处理：
+        - co_occurrence模型使用较低学习率和权重衰减
+        - 返回四个模型指标的平均值
+    """
     # 分别训练四个模型
     models_metrics = {}
     total_time = 0
@@ -621,7 +852,28 @@ def train_final_epoch(model_dict, train_loader, criterion, optimizer, device):
 
 
 def validate_epoch(model, val_loader, criterion, device, is_binary=False, model_type=None, epoch=0):
-    """验证一个epoch"""
+    """
+    函数：validate_epoch
+    功能：验证模型在验证集上的性能，计算各项指标
+    输入：
+        model (torch.nn.Module 或 dict): 模型对象（Final模型时为字典）
+        val_loader (DataLoader): 验证数据加载器
+        criterion (torch.nn.Module): 损失函数
+        device (str): 计算设备
+        is_binary (bool): 是否为二元分类，默认False
+        model_type (str): 模型类型
+        epoch (int): 当前epoch索引，用于日志记录
+    输出：
+        tuple: (epoch_loss, epoch_acc, detailed_metrics, epoch_time)
+            - epoch_loss (float): 整个epoch的平均损失
+            - epoch_acc (float): 整个epoch的准确率
+            - detailed_metrics (dict): 详细性能指标
+            - epoch_time (float): epoch耗时（秒）
+    特殊处理：
+        - 当model_type为'final'时，调用validate_final_model
+        - 记录验证batch详细信息到日志文件
+        - co_occurrence模型每100个batch记录一次概率信息
+    """
     if model_type == 'final':
         # 每个epoch都记录概率信息
         log_probabilities = True
@@ -705,7 +957,30 @@ def validate_epoch(model, val_loader, criterion, device, is_binary=False, model_
 
 
 def validate_final_model(model_dict, val_loader, criterion, device, epoch=0, log_probabilities=False):
-    """验证Final模型"""
+    """
+    函数：validate_final_model
+    功能：验证Final模型（计算各子模型加权结果）
+    输入：
+        model_dict (dict): 包含四个子模型的字典 {resnet, densenet, co_occurrence, gram_net, weights}
+        val_loader (DataLoader): 验证数据加载器
+        criterion (torch.nn.Module): 损失函数
+        device (str): 计算设备
+        epoch (int): 当前epoch索引，默认为0
+        log_probabilities (bool): 是否记录概率信息，默认False
+    输出：
+        tuple: (final_loss, final_acc, final_metrics, time_taken)
+            - final_loss (float): Final模型的损失值
+            - final_acc (float): Final模型的准确率
+            - final_metrics (dict): 详细指标，包含：
+              * 整体和各类别的precision, recall, f1
+              * individual_models: 各子模型的验证指标
+            - time_taken (float): 耗时（秒，暂时设为0）
+    功能细节：
+        - 分别验证每个子模型
+        - 计算Final模型的加权输出
+        - 每100个batch记录一次概率信息（如果启用）
+        - 记录验证详细信息到日志文件
+    """
     # 分别验证四个模型并计算加权结果
     models_metrics = {}
     all_final_outputs = []
@@ -802,7 +1077,36 @@ def validate_final_model(model_dict, val_loader, criterion, device, epoch=0, log
 
 def train_model(model_type, train_loader, val_loader, num_epochs, device, save_dir,
                 learning_rate=1e-3, batch_size=32, experiment_name=None):
-    """训练指定模型"""
+    """
+    函数：train_model
+    功能：训练指定模型的主函数，包括初始化、训练循环、模型保存等
+    输入：
+        model_type (str): 模型类型 ('resnet', 'densenet', 'co_occurrence', 'gram_net', 'final')
+        train_loader (DataLoader): 训练数据加载器
+        val_loader (DataLoader): 验证数据加载器
+        num_epochs (int): 训练轮数
+        device (str): 计算设备('cuda'或'cpu')
+        save_dir (str): 模型保存目录
+        learning_rate (float): 初始学习率，默认1e-3
+        batch_size (int): 批次大小，默认32
+        experiment_name (str, optional): 实验名称，默认自动生成
+    输出：
+        best_val_acc (float): 最佳验证准确率（0-1之间）
+    主要功能：
+        - 创建或加载模型
+        - 初始化损失函数、优化器和学习率调度器
+        - 创建DetailedExperimentLogger记录实验数据
+        - 循环训练num_epochs个epoch，每个epoch进行：
+          * 训练阶段
+          * 验证阶段
+          * 记录指标到TensorBoard和JSON
+          * 保存最佳和最终模型
+    输出文件：
+        - 最佳模型：{save_dir}/best_{model_type}_model.pth (或目录)
+        - 最终模型：{save_dir}/final_{model_type}_model.pth (或目录)
+        - 实验数据：{save_dir}/tensorboard_logs/{experiment_name}.json
+        - TensorBoard日志：{save_dir}/tensorboard_logs/{experiment_name}/
+    """
 
     # 创建模型
     model = create_model(model_type)
@@ -1082,7 +1386,36 @@ def train_model(model_type, train_loader, val_loader, num_epochs, device, save_d
 
 
 def main():
-    """主函数"""
+    """
+    函数：main
+    功能：程序入口函数，解析命令行参数、加载数据和执行模型训练
+    输入：
+        无直接输入，通过命令行参数传入（见argparse定义）：
+        - --model_type: 模型类型，默认'final'
+        - --data_dir: 数据根目录，默认'E:/dataset/BigGAN'
+        - --batch_size: 批次大小，默认32
+        - --num_epochs: 训练轮数，默认5
+        - --learning_rate: 学习率，默认1e-3
+        - --save_dir: 模型保存目录，默认'./checkpoints'
+        - --num_workers: 数据加载工作进程数，默认4
+        - --device: 计算设备，默认'cuda'（如可用）或'cpu'
+    输出：
+        无返回值。执行以下操作：
+        - 加载并预处理数据（训练集和验证集）
+        - 构建数据加载器
+        - 调用train_model()训练模型
+        - 打印训练结果和最佳准确率
+    数据预处理：
+        训练集：调整大小(256x256)、随机水平翻转、随机旋转(±10度)、颜色抖动、标准化
+        验证集：调整大小(256x256)、标准化
+    输出示例：
+        使用设备: cuda
+        训练集大小: 10000
+        验证集大小: 2000
+        开始训练 final 模型...
+        ...
+        最佳验证准确率: 0.9234
+    """
     parser = argparse.ArgumentParser(description='单独训练各个模型')
     parser.add_argument('--model_type', type=str, default='final', choices=['resnet', 'densenet', 'co_occurrence', 'gram_net', 'final'], help='要训练的模型类型')
     parser.add_argument('--data_dir', type=str, default='E:/dataset/BigGAN', help='数据根目录')
